@@ -1,0 +1,136 @@
+name: Build
+
+# Manual build: pick the upstream version to compile.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream Stalwart version, without 'v' (e.g. 1.0.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  RUST_VERSION: "1.99.1"
+  FEATURES: "sqlite"
+
+jobs:
+  build:
+    name: Build aarch64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.src.outputs.commit }}
+    steps:
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version: $VERSION" >&2; exit 1; }
+
+      - name: Checkout upstream
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: stalwartlabs/stalwart
+          ref: v${{ inputs.version }}
+          path: src
+          persist-credentials: false
+
+      - name: Record upstream commit
+        id: src
+        run: echo "commit=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Same setup as upstream ARM jobs: LTO with codegen-units=1
+      # needs a lot of memory.
+      - name: Add swap
+        run: |
+          sudo fallocate -l 16G /mnt/swapfile || sudo fallocate -l 16G /swapfile-build
+          f=$( [ -f /mnt/swapfile ] && echo /mnt/swapfile || echo /swapfile-build )
+          sudo chmod 600 "$f" && sudo mkswap "$f" && sudo swapon "$f"
+          free -h
+
+      - name: Install Rust
+        run: |
+          rustup set profile minimal
+          rustup toolchain install "$RUST_VERSION"
+          rustup default "$RUST_VERSION"
+          rustc --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.arch }}-${{ hashFiles('src/Cargo.lock') }}
+
+      - name: Build
+        working-directory: src
+        env:
+          # As upstream for aarch64: also works on 16K/64K page kernels.
+          JEMALLOC_SYS_WITH_LG_PAGE: "16"
+        run: cargo build --release --locked -p stalwart --no-default-features --features "$FEATURES"
+
+      - name: Package
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir out
+          tar -C src/target/release -czf "out/stalwart-${VERSION}-aarch64-sqlite.tar.gz" stalwart
+          # Corresponding source (AGPL-3.0).
+          git -C src archive --format=tar.gz --prefix="stalwart-${VERSION}/" -o "../out/stalwart-${VERSION}-source.tar.gz" HEAD
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: out/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Separate job: upstream code (build.rs included) runs without
+  # write permissions.
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: out
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/stalwart-*-aarch64-sqlite.tar.gz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > notes.md <<EOF
+          Unofficial build of Stalwart ${VERSION} for aarch64-unknown-linux-gnu.
+
+          - Source: https://github.com/stalwartlabs/stalwart/tree/${COMMIT} (tag v${VERSION}, unmodified); copy attached as \`stalwart-${VERSION}-source.tar.gz\`
+          - Command: \`cargo build --release --locked -p stalwart --no-default-features --features ${FEATURES}\`
+          - Rust ${RUST_VERSION}, \`JEMALLOC_SYS_WITH_LG_PAGE=16\`
+          - Workflow: ${RUN_URL}
+
+          \`\`\`
+          $(cat out/SHA256SUMS)
+          \`\`\`
+          EOF
+          gh release create "v${VERSION}" out/* --repo "$GITHUB_REPOSITORY" --title "Stalwart ${VERSION} (aarch64, SQLite)" --notes-file notes.md
