@@ -30,14 +30,19 @@ gh attestation verify stalwart-<version>-aarch64-sqlite.tar.gz --repo nicheosala
 
 ## Building a new version
 
-Actions → Build → Run workflow, with the upstream version (e.g. `1.0.0`), or:
+`check.yml` runs every 5 minutes and dispatches `build.yml` when upstream's
+latest release has no matching release here. It deletes its own successful
+runs, so only failures stay in the Actions tab.
+
+To build by hand: Actions → Build → Run workflow, with the upstream version
+(e.g. `1.0.0`), or:
 
 ```
 gh workflow run build.yml -R nicheosala/stalwart-build -f version=1.0.0
 ```
 
-Before that, check that the feature names in upstream's
-`crates/main/Cargo.toml` haven't changed.
+If upstream renames the `sqlite` feature, the build fails: check
+`crates/main/Cargo.toml`.
 
 ## License
 
