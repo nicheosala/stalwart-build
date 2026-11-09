@@ -1,8 +1,8 @@
 name: Check upstream
 
 # Every 5 min: if upstream has a release we haven't built, dispatch build.yml.
-# If the schedule stalls (e.g. after a GitHub Actions incident), a push touching
-# this file re-registers it; disable/enable alone was not enough on 2026-11-09.
+# GitHub schedules are best effort: runs may be late or skipped. Successful runs
+# are kept so the real cadence can be checked in the Actions tab.
 on:
   schedule:
     - cron: "2-59/5 * * * *"
@@ -38,12 +38,3 @@ jobs:
           echo "dispatching build for $version"
           gh workflow run build.yml -R "$REPO" -f version="$version"
 
-      # Keep the Actions tab readable: drop earlier successful checks.
-      - name: Delete old successful checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          # The current run is in_progress, so it is never listed.
-          gh run list -R "$REPO" -w check.yml -s success -L 200 --json databaseId -q '.[].databaseId' |
-            while read -r id; do gh api -X DELETE "repos/$REPO/actions/runs/$id" --silent; done
