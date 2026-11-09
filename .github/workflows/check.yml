@@ -1,6 +1,8 @@
 name: Check upstream
 
 # Every 5 min: if upstream has a release we haven't built, dispatch build.yml.
+# If the schedule stalls (e.g. after a GitHub Actions incident), a push touching
+# this file re-registers it; disable/enable alone was not enough on 2026-11-09.
 on:
   schedule:
     - cron: "2-59/5 * * * *"
