@@ -11,6 +11,8 @@ on:
 
 permissions: {}
 
+concurrency: build-${{ inputs.version }}
+
 env:
   RUST_VERSION: "1.99.1"
   FEATURES: "sqlite"
