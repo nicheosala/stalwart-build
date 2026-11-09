@@ -37,4 +37,3 @@ jobs:
 
           echo "dispatching build for $version"
           gh workflow run build.yml -R "$REPO" -f version="$version"
-
